@@ -44,7 +44,7 @@ Run your test suite. Sign off when it passes. You're the CI now. ✌️
 
 ```bash
 # Install (or upgrade) to /usr/local/bin
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/bb-signoff/main/bb-signoff \
+curl -fsSL https://raw.githubusercontent.com/Mohamed-Omar96/bb-signoff/main/bb-signoff \
   -o /usr/local/bin/bb-signoff && chmod +x /usr/local/bin/bb-signoff
 ```
 
