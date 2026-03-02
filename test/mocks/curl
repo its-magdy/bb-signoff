@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Mock curl for bb-signoff testing
+# Intercepts Bitbucket API calls and returns configurable responses
+# Supports -o <file> and -w "%{http_code}" as used by bb_api()
+
+# --- Default Mock Responses & HTTP Codes ---
+: ${MOCK_GET_REPO_JSON:='{"mainbranch":{"name":"main"}}'}
+: ${MOCK_GET_REPO_HTTP:=200}
+
+: ${MOCK_GET_STATUSES_JSON:='{"values":[]}'}
+: ${MOCK_GET_STATUSES_HTTP:=200}
+
+: ${MOCK_GET_RESTRICTIONS_JSON:='{"values":[]}'}
+: ${MOCK_GET_RESTRICTIONS_HTTP:=200}
+
+: ${MOCK_POST_STATUS_JSON:='{}'}
+: ${MOCK_POST_STATUS_HTTP:=200}
+
+: ${MOCK_POST_RESTRICTION_JSON:='{"id":1}'}
+: ${MOCK_POST_RESTRICTION_HTTP:=200}
+
+: ${MOCK_DELETE_RESTRICTION_HTTP:=200}
+
+# --- Debugging ---
+if [[ -n "${CURL_MOCK_DEBUG:-}" ]]; then
+  echo "--- curl mock called ---" >&2
+  echo "Args: $*" >&2
+  echo "------------------------" >&2
+fi
+
+# --- Parse curl arguments ---
+method="GET"
+url=""
+data=""
+output_file=""
+write_format=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -X) method="$2"; shift 2 ;;
+    -s) shift ;;
+    -u) shift 2 ;;   # skip Basic auth (not used anymore)
+    -H) shift 2 ;;   # skip headers (Authorization, Content-Type)
+    -d) data="$2"; shift 2 ;;
+    -o) output_file="$2"; shift 2 ;;
+    -w) write_format="$2"; shift 2 ;;
+    *) url="$1"; shift ;;
+  esac
+done
+
+# Helper: write body and http_code
+respond() {
+  local body="$1"
+  local http_code="$2"
+
+  if [[ -n "$output_file" ]]; then
+    echo "$body" > "$output_file"
+  else
+    echo "$body"
+  fi
+
+  if [[ "$write_format" == *"http_code"* ]]; then
+    echo "$http_code"
+  fi
+}
+
+# --- Route based on URL and method ---
+
+# GET repository info (default branch)
+if [[ "$method" == "GET" && "$url" == *"api.bitbucket.org/2.0/repositories/"* && ! "$url" == *"/commit/"* && ! "$url" == *"/branch-restrictions"* ]]; then
+  [[ -n "${CURL_MOCK_DEBUG:-}" ]] && echo "Mock: GET repository" >&2
+  respond "$MOCK_GET_REPO_JSON" "$MOCK_GET_REPO_HTTP"
+
+# GET commit statuses
+elif [[ "$method" == "GET" && "$url" == *"/commit/"*"/statuses"* ]]; then
+  [[ -n "${CURL_MOCK_DEBUG:-}" ]] && echo "Mock: GET commit statuses" >&2
+  respond "$MOCK_GET_STATUSES_JSON" "$MOCK_GET_STATUSES_HTTP"
+
+# POST commit status (create signoff)
+elif [[ "$method" == "POST" && "$url" == *"/commit/"*"/statuses/build"* ]]; then
+  [[ -n "${CURL_MOCK_DEBUG:-}" ]] && echo "Mock: POST commit status" >&2
+  respond "$MOCK_POST_STATUS_JSON" "$MOCK_POST_STATUS_HTTP"
+
+# GET branch restrictions
+elif [[ "$method" == "GET" && "$url" == *"/branch-restrictions"* ]]; then
+  [[ -n "${CURL_MOCK_DEBUG:-}" ]] && echo "Mock: GET branch restrictions" >&2
+  respond "$MOCK_GET_RESTRICTIONS_JSON" "$MOCK_GET_RESTRICTIONS_HTTP"
+
+# POST branch restriction (install)
+elif [[ "$method" == "POST" && "$url" == *"/branch-restrictions"* ]]; then
+  [[ -n "${CURL_MOCK_DEBUG:-}" ]] && echo "Mock: POST branch restriction" >&2
+  respond "$MOCK_POST_RESTRICTION_JSON" "$MOCK_POST_RESTRICTION_HTTP"
+
+# DELETE branch restriction (uninstall)
+elif [[ "$method" == "DELETE" && "$url" == *"/branch-restrictions/"* ]]; then
+  [[ -n "${CURL_MOCK_DEBUG:-}" ]] && echo "Mock: DELETE branch restriction" >&2
+  respond "" "$MOCK_DELETE_RESTRICTION_HTTP"
+
+# Fallback
+else
+  [[ -n "${CURL_MOCK_DEBUG:-}" ]] && echo "Mock: No match for $method $url" >&2
+  respond "{}" 200
+fi

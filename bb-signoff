@@ -1,0 +1,549 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# set -x # Keep this commented out unless actively debugging
+
+DEBUG=${SIGNOFF_DEBUG:-}
+readonly VERSION="1.0.0"
+
+# Status symbols for consistent display - export them for both script and tests
+export STATUS_SUCCESS="✓"
+export STATUS_PENDING="⟳"
+export STATUS_FAILURE="✗"
+
+trap 'fail "Unexpected error on line $LINENO ($?)"' ERR
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "Error: git command not found" >&2
+  exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "Error: curl command not found" >&2
+  exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "Error: jq command not found. Please install jq: https://jqlang.org" >&2
+  exit 1
+fi
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+debug() {
+  if [[ -n "$DEBUG" ]]; then
+    echo "Debug: $*" >&2
+  fi
+}
+
+fail() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+# ─── Auth & Config ────────────────────────────────────────────────────────────
+
+BB_API_TOKEN="${BB_API_TOKEN:-}"
+
+CONFIG_FILE="${HOME}/.bb-signoff"
+
+if [[ -z "$BB_API_TOKEN" ]] && [[ -f "$CONFIG_FILE" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    key="${line%%=*}"
+    value="${line#*=}"
+    key=$(echo "$key" | xargs)
+    case "$key" in
+      BB_API_TOKEN)  BB_API_TOKEN="$value" ;;
+    esac
+  done < "$CONFIG_FILE"
+fi
+
+check_auth() {
+  if [[ -z "$BB_API_TOKEN" ]]; then
+    fail "Authentication not configured. Set BB_API_TOKEN or create ~/.bb-signoff with BB_API_TOKEN=ATCTT3..."
+  fi
+  if [[ "$BB_API_TOKEN" != ATCTT3* ]]; then
+    fail "Only repository access tokens (ATCTT3...) are supported"
+  fi
+}
+
+# ─── Workspace/Repo Detection ────────────────────────────────────────────────
+
+WORKSPACE=""
+REPO_SLUG=""
+
+detect_repo() {
+  local remote_url
+  remote_url=$(git remote get-url origin 2>/dev/null) || fail "Not a git repository or no 'origin' remote found"
+
+  if [[ "$remote_url" =~ bitbucket\.org[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    WORKSPACE="${BASH_REMATCH[1]}"
+    REPO_SLUG="${BASH_REMATCH[2]}"
+  else
+    fail "Could not parse Bitbucket workspace/repo from remote URL: $remote_url"
+  fi
+}
+
+# ─── API Helper ───────────────────────────────────────────────────────────────
+
+bb_api() {
+  local method="$1" endpoint="$2"
+  shift 2
+  local tmpfile
+  tmpfile=$(mktemp)
+  local http_code
+  http_code=$(curl -s -o "$tmpfile" -w "%{http_code}" \
+    -H "Authorization: Bearer ${BB_API_TOKEN}" \
+    -X "$method" \
+    -H "Content-Type: application/json" \
+    "https://api.bitbucket.org/2.0/repositories/${WORKSPACE}/${REPO_SLUG}${endpoint}" \
+    "$@")
+  local body
+  body=$(cat "$tmpfile")
+  rm -f "$tmpfile"
+  if [[ "$http_code" == "401" ]]; then
+    fail "Authentication failed (401). Check BB_API_TOKEN"
+  elif [[ "$http_code" == "403" ]]; then
+    fail "Permission denied (403). Ensure the token has 'Repository admin' scope"
+  fi
+  echo "$body"
+}
+
+bb_api_check() {
+  local response="$1"
+  local error
+  error=$(echo "$response" | jq -r '.error.message // .error // empty' 2>/dev/null)
+  if [[ -n "$error" ]]; then
+    fail "API Error: ${error}"
+  fi
+}
+
+# ─── Git Helpers ──────────────────────────────────────────────────────────────
+
+current_sha() {
+  git rev-parse HEAD 2>/dev/null || fail "Could not determine current commit SHA"
+}
+
+default_branch() {
+  local response
+  response=$(bb_api GET "") || fail "failed to get default branch"
+  echo "$response" | jq -r '.mainbranch.name'
+}
+
+is_clean() {
+  if [[ -n "$(git status --porcelain)" ]]; then
+    debug "found uncommitted changes"
+    return 1
+  fi
+
+  if ! git rev-parse --abbrev-ref @{push} >/dev/null 2>&1; then
+    debug "no tracking branch found"
+    fail "current branch is not tracking a remote branch"
+  fi
+
+  if [[ -n "$(git log @{push}..)" ]]; then
+    debug "found unpushed changes"
+    return 1
+  fi
+
+  return 0
+}
+
+# ─── Commands ─────────────────────────────────────────────────────────────────
+
+cmd_create() {
+  local force=false
+  local contexts=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f)         force=true; shift ;;
+      -*)         fail "unknown option: $1" ;;
+      *)          contexts+=("$1"); shift ;;
+    esac
+  done
+
+  if ! $force && ! is_clean; then
+    fail "repository has uncommitted or unpushed changes"
+  fi
+
+  local user
+  user=$(git config user.name) || fail "failed to get git user name"
+  [[ -z "$user" ]] && fail "git user.name is not set"
+
+  check_auth
+  detect_repo
+
+  local sha
+  sha=$(current_sha)
+  local short_sha="${sha:0:7}"
+
+  if [[ ${#contexts[@]} -eq 0 ]]; then
+    contexts=("")
+  fi
+
+  local success=true
+  local success_messages=()
+
+  for ctx in "${contexts[@]}"; do
+    local key="signoff"
+    if [[ -n "$ctx" ]]; then
+      key="signoff-${ctx}"
+    fi
+
+    debug "creating status for commit ${sha} by ${user} with key ${key}"
+
+    local payload
+    payload=$(jq -n \
+      --arg key "$key" \
+      --arg state "SUCCESSFUL" \
+      --arg name "${ctx:-signoff}" \
+      --arg url "https://bitbucket.org/${WORKSPACE}/${REPO_SLUG}" \
+      --arg desc "${user} signed off" \
+      '{key: $key, state: $state, name: $name, url: $url, description: $desc}')
+
+    local response
+    response=$(bb_api POST "/commit/${sha}/statuses/build" -d "$payload")
+    if bb_api_check "$response" 2>/dev/null; then
+      if [[ -z "$ctx" ]]; then
+        success_messages+=("${STATUS_SUCCESS} Signed off on ${short_sha}")
+      else
+        success_messages+=("${STATUS_SUCCESS} Signed off on ${short_sha} for ${ctx}")
+      fi
+    else
+      success=false
+      if [[ -z "$ctx" ]]; then
+        echo "${STATUS_FAILURE} Failed to sign off on ${short_sha}" >&2
+      else
+        echo "${STATUS_FAILURE} Failed to sign off on ${short_sha} for ${ctx}" >&2
+      fi
+    fi
+  done
+
+  if $success; then
+    printf "%s\n" "${success_messages[@]}"
+  else
+    exit 1
+  fi
+}
+
+cmd_install() {
+  local branch=""
+  local contexts=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --branch|-b)
+        if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+          fail "option --branch requires an argument"
+        fi
+        branch="$2"; shift 2 ;;
+      -*) fail "unknown option: $1" ;;
+      *)  contexts+=("$1"); shift ;;
+    esac
+  done
+
+  check_auth
+  detect_repo
+
+  if [[ -z "$branch" ]]; then
+    branch=$(default_branch) || fail "failed to get default branch"
+  fi
+  [[ -z "$branch" ]] && fail "branch name cannot be empty"
+
+  if [[ ${#contexts[@]} -eq 0 ]]; then
+    contexts=("")
+  fi
+
+  local existing
+  existing=$(bb_api GET "/branch-restrictions" | \
+    jq -r --arg pattern "$branch" --arg kind "require_passing_builds_to_merge" \
+    '.values[]? | select(.pattern == $pattern and .kind == $kind) | .id')
+
+  if [[ -n "$existing" ]]; then
+    echo "${STATUS_PENDING} Merge check already exists for '${branch}'"
+  else
+    local payload
+    payload=$(jq -n \
+      --arg pattern "$branch" \
+      --arg kind "require_passing_builds_to_merge" \
+      '{pattern: $pattern, kind: $kind, value: 1}')
+
+    local response
+    response=$(bb_api POST "/branch-restrictions" -d "$payload")
+    bb_api_check "$response"
+
+    debug "installing merge check on branch: ${branch}"
+
+    if [[ ${#contexts[@]} -eq 1 && -z "${contexts[0]}" ]]; then
+      echo "${STATUS_SUCCESS} Bitbucket '${branch}' branch now requires signoff"
+    else
+      echo "${STATUS_SUCCESS} Bitbucket '${branch}' branch now requires signoff on: ${contexts[*]}"
+    fi
+  fi
+
+}
+
+cmd_uninstall() {
+  local branch=""
+  local contexts=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --branch|-b)
+        if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+          fail "option --branch requires an argument"
+        fi
+        branch="$2"; shift 2 ;;
+      -*) fail "unknown option: $1" ;;
+      *)  contexts+=("$1"); shift ;;
+    esac
+  done
+
+  check_auth
+  detect_repo
+
+  if [[ -z "$branch" ]]; then
+    branch=$(default_branch) || fail "failed to get default branch"
+  fi
+  [[ -z "$branch" ]] && fail "branch name cannot be empty"
+
+  if [[ ${#contexts[@]} -eq 0 ]]; then
+    contexts=("")
+  fi
+
+  local restrictions
+  restrictions=$(bb_api GET "/branch-restrictions")
+  bb_api_check "$restrictions"
+
+  local ids
+  ids=$(echo "$restrictions" | \
+    jq -r --arg branch "$branch" --arg kind "require_passing_builds_to_merge" \
+    '.values[]? | select(.kind == $kind) | select(.pattern as $p | $branch | test("^" + ($p | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$")) | .id')
+
+  if [[ -z "$ids" ]]; then
+    echo "${STATUS_FAILURE} No merge check found for '${branch}'"
+    return 0
+  fi
+
+  debug "removing protection from branch: ${branch}"
+
+  while IFS= read -r id; do
+    bb_api DELETE "/branch-restrictions/${id}" > /dev/null
+  done <<< "$ids"
+
+  for ctx in "${contexts[@]}"; do
+    if [[ -z "$ctx" ]]; then
+      echo "${STATUS_SUCCESS} Bitbucket '${branch}' branch no longer requires signoff"
+    else
+      echo "${STATUS_SUCCESS} Bitbucket '${branch}' branch no longer requires signoff on ${ctx}"
+    fi
+  done
+}
+
+cmd_check() {
+  local branch=""
+  local contexts=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --branch|-b)
+        if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+          fail "option --branch requires an argument"
+        fi
+        branch="$2"; shift 2 ;;
+      -*) fail "unknown option: $1" ;;
+      *)  contexts+=("$1"); shift ;;
+    esac
+  done
+
+  check_auth
+  detect_repo
+
+  if [[ -z "$branch" ]]; then
+    branch=$(default_branch) || fail "failed to get default branch"
+  fi
+  [[ -z "$branch" ]] && fail "branch name cannot be empty"
+
+  if [[ ${#contexts[@]} -eq 0 ]]; then
+    contexts=("")
+  fi
+
+  local restrictions
+  restrictions=$(bb_api GET "/branch-restrictions") || {
+    for ctx in "${contexts[@]}"; do
+      if [[ -z "$ctx" ]]; then
+        echo "${STATUS_FAILURE} Bitbucket '${branch}' branch does not require signoff"
+      else
+        echo "${STATUS_FAILURE} Bitbucket '${branch}' branch does not require signoff on ${ctx}"
+      fi
+    done
+    return 1
+  }
+
+  local match
+  match=$(echo "$restrictions" | \
+    jq -r --arg branch "$branch" --arg kind "require_passing_builds_to_merge" \
+    '.values[]? | select(.kind == $kind) | select(.pattern as $p | $branch | test("^" + ($p | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$")) | .id')
+
+  debug "checking merge check for branch: ${branch}"
+
+  for ctx in "${contexts[@]}"; do
+    if [[ -n "$match" ]]; then
+      if [[ -z "$ctx" ]]; then
+        echo "${STATUS_SUCCESS} Bitbucket '${branch}' branch requires signoff"
+      else
+        echo "${STATUS_SUCCESS} Bitbucket '${branch}' branch requires signoff on ${ctx}"
+      fi
+    else
+      if [[ -z "$ctx" ]]; then
+        echo "${STATUS_FAILURE} Bitbucket '${branch}' branch does not require signoff"
+      else
+        echo "${STATUS_FAILURE} Bitbucket '${branch}' branch does not require signoff on ${ctx}"
+      fi
+      return 1
+    fi
+  done
+}
+
+cmd_status() {
+  local branch=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --branch|-b)
+        if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+          fail "option --branch requires an argument"
+        fi
+        branch="$2"; shift 2 ;;
+      -*) fail "unknown option: $1" ;;
+      *)  fail "unexpected argument: $1" ;;
+    esac
+  done
+
+  check_auth
+  detect_repo
+
+  local sha
+  sha=$(current_sha)
+  local short_sha="${sha:0:7}"
+
+  local statuses
+  statuses=$(bb_api GET "/commit/${sha}/statuses") || {
+    echo "${STATUS_FAILURE} Could not get status for commit ${short_sha}"
+    return 1
+  }
+
+  local signoffs
+  signoffs=$(echo "$statuses" | \
+    jq -r '.values[]? | select(.key | startswith("signoff")) | "\(.state)\t\(.key)\t\(.description // .name // "")"')
+
+  if [[ -z "$signoffs" ]]; then
+    echo "No signoffs found for ${short_sha}"
+    return 0
+  fi
+
+  while IFS=$'\t' read -r state key name; do
+    local icon
+    case "$state" in
+      SUCCESSFUL) icon="$STATUS_SUCCESS" ;;
+      FAILED)     icon="$STATUS_FAILURE" ;;
+      INPROGRESS) icon="$STATUS_PENDING" ;;
+      *)          icon="?" ;;
+    esac
+    echo "  ${icon} ${key}: ${name}"
+  done <<< "$signoffs"
+}
+
+cmd_completion() {
+  cat <<'EOF'
+# bash completion for bb-signoff
+
+_bb_signoff() {
+  local cur prev
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+  case "$prev" in
+    bb-signoff)
+      COMPREPLY=( $(compgen -W "create install uninstall check status version -f --help" -- "$cur") )
+      return 0
+      ;;
+    create|install|uninstall|check)
+      COMPREPLY=( $(compgen -W "--branch" -- "$cur") )
+      return 0
+      ;;
+    status)
+      COMPREPLY=( $(compgen -W "--branch" -- "$cur") )
+      return 0
+      ;;
+  esac
+
+  if [[ $cur == --* ]]; then
+    COMPREPLY=( $(compgen -W "--branch" -- "$cur") )
+    return 0
+  fi
+
+  return 0
+}
+
+complete -F _bb_signoff bb-signoff
+EOF
+}
+
+cmd_version() {
+  echo "bb-signoff ${VERSION}"
+}
+
+cmd_help() {
+  cat <<'EOF'
+Sign off on commits without CI infrastructure.
+
+USAGE
+  bb-signoff [flags] [command] [options]
+
+COMMANDS
+  create (default)  Sign off on the current commit
+  install           Install signoff requirement
+  uninstall         Uninstall signoff requirement
+  check             Check if signoff is required
+  status            Show signoff status for the current commit
+  version           Show bb-signoff version
+  completion        Output shell completion code
+
+FLAGS
+  -f  Force sign off (ignore uncommitted/unpushed changes)
+
+OPTIONS
+  --branch <branch>  Branch to operate on (for install, uninstall, check)
+
+EXAMPLES
+  bb-signoff                         # Sign off on current commit
+  bb-signoff create -f               # Force signoff
+  bb-signoff install                 # Require signoff on default branch
+  bb-signoff install --branch other  # Require signoff on a specific branch
+  bb-signoff check                   # Check if signoff is required
+  bb-signoff check --branch other    # Check if signoff is required on branch
+  bb-signoff status                  # Show completed/pending signoff status
+
+COMPLETION
+  # Add to ~/.bashrc:
+  eval "$(bb-signoff completion)"
+EOF
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+case "${1:-}" in
+  "")             cmd_create "$@" ;;
+  "create")       shift; cmd_create "$@" ;;
+  "install")      shift; cmd_install "$@" ;;
+  "uninstall")    shift; cmd_uninstall "$@" ;;
+  "check")        shift; cmd_check "$@" || exit $? ;;
+  "status")       shift; cmd_status "$@" ;;
+  "version")      cmd_version ;;
+  "completion")   shift; cmd_completion "$@" ;;
+  "-h"|"--help")  cmd_help ;;
+  "-f")           cmd_create -f ;;
+  -*)             cmd_help; exit 1 ;;
+  *)              cmd_create "$@" ;;
+esac

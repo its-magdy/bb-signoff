@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment / config
+.bb-signoff
+.env
+
+# Test artifacts
+test/tmp/
+
+# Claude
+.claude/settings.local.json
+.mcp.json
