@@ -11,12 +11,12 @@ PASSED=true
 for version in 3 4 5; do
   echo -e "\n\033[1;35mBash $version\033[0m"
 
-  docker build --quiet --pull -t "bb-signoff-test:bash$version" \
+  docker build --quiet --pull --platform linux/amd64 -t "bb-signoff-test:bash$version" \
     --build-arg "BASH_VERSION=$version" \
     -f "$DOCKER_DIR/Dockerfile" \
     "$DOCKER_DIR" >/dev/null
 
-  if docker run --rm -v "$REPO_ROOT:/app" "bb-signoff-test:bash$version"; then
+  if docker run --rm --platform linux/amd64 -v "$REPO_ROOT:/app" "bb-signoff-test:bash$version"; then
     echo "✅ Tests passed for Bash $version"
     ./bb-signoff "bash-$version" || true
   else
