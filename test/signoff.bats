@@ -134,6 +134,39 @@ teardown() {
   [[ "$output" == *"requires an argument"* ]]
 }
 
+@test "install with --builds sets correct value" {
+  export MOCK_POST_RESTRICTION_DATA_FILE="${BATS_TEST_TMPDIR}/post_data.json"
+  run -0 bb-signoff install --builds 2
+  [[ "$output" == *"now requires signoff"* ]]
+  local value
+  value=$(jq -r '.value' "$MOCK_POST_RESTRICTION_DATA_FILE")
+  [[ "$value" == "2" ]]
+}
+
+@test "install --builds defaults to 1" {
+  export MOCK_POST_RESTRICTION_DATA_FILE="${BATS_TEST_TMPDIR}/post_data.json"
+  run -0 bb-signoff install
+  [[ "$output" == *"now requires signoff"* ]]
+  local value
+  value=$(jq -r '.value' "$MOCK_POST_RESTRICTION_DATA_FILE")
+  [[ "$value" == "1" ]]
+}
+
+@test "install fails with invalid --builds value 0" {
+  run -1 bb-signoff install --builds 0
+  [[ "$output" == *"positive integer"* ]]
+}
+
+@test "install fails with non-integer --builds value" {
+  run -1 bb-signoff install --builds foo
+  [[ "$output" == *"positive integer"* ]]
+}
+
+@test "install fails with missing --builds argument" {
+  run -1 bb-signoff install --builds
+  [[ "$output" == *"requires an argument"* ]]
+}
+
 # ─── Uninstall tests ─────────────────────────────────────────────────────────
 
 @test "uninstall removes merge check" {
