@@ -18,7 +18,6 @@ for version in 3 4 5; do
 
   if docker run --rm --platform linux/amd64 -v "$REPO_ROOT:/app" "bb-signoff-test:bash$version"; then
     echo "✅ Tests passed for Bash $version"
-    ./bb-signoff "bash-$version" || true
   else
     echo "❌ Tests failed for Bash $version"
     PASSED=false
@@ -27,7 +26,6 @@ done
 
 if $PASSED; then
   echo -e "\n✅ Tests passed for all Bash versions"
-  ./bb-signoff
   exit 0
 else
   exit 1

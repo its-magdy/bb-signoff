@@ -91,6 +91,7 @@ elif [[ "$method" == "GET" && "$url" == *"/branch-restrictions"* ]]; then
 # POST branch restriction (install)
 elif [[ "$method" == "POST" && "$url" == *"/branch-restrictions"* ]]; then
   [[ -n "${CURL_MOCK_DEBUG:-}" ]] && echo "Mock: POST branch restriction" >&2
+  [[ -n "${MOCK_POST_RESTRICTION_DATA_FILE:-}" ]] && echo "$data" > "$MOCK_POST_RESTRICTION_DATA_FILE"
   respond "$MOCK_POST_RESTRICTION_JSON" "$MOCK_POST_RESTRICTION_HTTP"
 
 # DELETE branch restriction (uninstall)

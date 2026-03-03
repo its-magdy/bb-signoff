@@ -113,6 +113,7 @@ Adds a Bitbucket branch restriction so PRs can't be merged without a green signo
 bb-signoff install                   # Default branch
 bb-signoff install --branch main     # Specific branch
 bb-signoff install -b staging        # Short form
+bb-signoff install --builds 2        # Require 2 successful builds
 ```
 
 ### Remove signoff requirement
@@ -191,7 +192,7 @@ eval "$(bb-signoff completion)"
 | Command | Description |
 |---------|-------------|
 | `bb-signoff [create] [context...] [-f]` | Sign off on the current commit |
-| `bb-signoff install [--branch X] [context...]` | Add merge check requiring signoff |
+| `bb-signoff install [--branch X] [--builds N] [context...]` | Add merge check requiring signoff |
 | `bb-signoff uninstall [--branch X]` | Remove merge check |
 | `bb-signoff check [--branch X] [context...]` | Check if signoff is required |
 | `bb-signoff status [--branch X]` | Show signoff statuses for the current commit |
@@ -205,6 +206,7 @@ eval "$(bb-signoff completion)"
 |------|-----------|-------------|
 | `-f` | `create` | Force sign off, ignoring uncommitted/unpushed changes |
 | `--branch X`, `-b X` | `install`, `uninstall`, `check`, `status` | Target a specific branch instead of the default |
+| `--builds N` | `install` | Number of successful builds required before merge (default: 1) |
 
 ---
 

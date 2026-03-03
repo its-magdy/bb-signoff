@@ -228,6 +228,7 @@ cmd_create() {
 
 cmd_install() {
   local branch=""
+  local builds=1
   local contexts=()
 
   while [[ $# -gt 0 ]]; do
@@ -237,10 +238,19 @@ cmd_install() {
           fail "option --branch requires an argument"
         fi
         branch="$2"; shift 2 ;;
+      --builds)
+        if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
+          fail "option --builds requires an argument"
+        fi
+        builds="$2"; shift 2 ;;
       -*) fail "unknown option: $1" ;;
       *)  contexts+=("$1"); shift ;;
     esac
   done
+
+  if ! [[ "$builds" =~ ^[1-9][0-9]*$ ]]; then
+    fail "option --builds requires a positive integer"
+  fi
 
   check_auth
   detect_repo
@@ -266,7 +276,8 @@ cmd_install() {
     payload=$(jq -n \
       --arg pattern "$branch" \
       --arg kind "require_passing_builds_to_merge" \
-      '{pattern: $pattern, kind: $kind, value: 1}')
+      --argjson value "$builds" \
+      '{pattern: $pattern, kind: $kind, value: $value}')
 
     local response
     response=$(bb_api POST "/branch-restrictions" -d "$payload")
@@ -468,8 +479,12 @@ _bb_signoff() {
       COMPREPLY=( $(compgen -W "create install uninstall check status version -f --help" -- "$cur") )
       return 0
       ;;
-    create|install|uninstall|check)
+    create|uninstall|check)
       COMPREPLY=( $(compgen -W "--branch" -- "$cur") )
+      return 0
+      ;;
+    install)
+      COMPREPLY=( $(compgen -W "--branch --builds" -- "$cur") )
       return 0
       ;;
     status)
@@ -515,12 +530,14 @@ FLAGS
 
 OPTIONS
   --branch <branch>  Branch to operate on (for install, uninstall, check)
+  --builds <n>       Number of successful builds required (default: 1; for install)
 
 EXAMPLES
   bb-signoff                         # Sign off on current commit
   bb-signoff create -f               # Force signoff
   bb-signoff install                 # Require signoff on default branch
   bb-signoff install --branch other  # Require signoff on a specific branch
+  bb-signoff install --builds 2      # Require 2 successful builds before merge
   bb-signoff check                   # Check if signoff is required
   bb-signoff check --branch other    # Check if signoff is required on branch
   bb-signoff status                  # Show completed/pending signoff status
