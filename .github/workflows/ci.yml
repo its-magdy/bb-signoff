@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: "Bash ${{ matrix.bash }}"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        bash: ["3", "4", "5"]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install bats-core
+        run: |
+          git clone --depth 1 --branch v1.11.0 https://github.com/bats-core/bats-core.git /tmp/bats
+          sudo /tmp/bats/install.sh /usr/local
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Run tests (Bash ${{ matrix.bash }})
+        run: |
+          docker build --pull --platform linux/amd64 \
+            --build-arg BASH_VERSION=${{ matrix.bash }} \
+            -t bb-signoff-test:bash${{ matrix.bash }} \
+            -f test/docker/Dockerfile \
+            test/docker
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD:/app" \
+            bb-signoff-test:bash${{ matrix.bash }}
