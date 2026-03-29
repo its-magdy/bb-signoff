@@ -44,7 +44,7 @@ Run your test suite. Sign off when it passes. You're the CI now. ✌️
 
 ```bash
 # Install (or upgrade) to /usr/local/bin
-curl -fsSL https://raw.githubusercontent.com/its-magdy/bb-signoff/main/bb-signoff \
+curl -fsSL https://raw.githubusercontent.com/its-magdy/bb-signoff/v1.0.0/bb-signoff \
   -o /usr/local/bin/bb-signoff && chmod +x /usr/local/bin/bb-signoff
 ```
 
@@ -54,7 +54,7 @@ Or copy manually if you've cloned the repo:
 cp bb-signoff /usr/local/bin/
 ```
 
-**Upgrading:** Re-run the same `curl` command above — it overwrites the existing binary in place. Verify with `bb-signoff version`.
+**Upgrading:** Re-run the `curl` command above with the new version number — it overwrites the existing binary in place. Verify with `bb-signoff version`.
 
 ---
 
